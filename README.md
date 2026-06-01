@@ -1,4 +1,4 @@
-# USB LED Module
+# noknok LEDs
 
 A simple USB-controlled LED module for the noknok ecosystem.
 
