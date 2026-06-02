@@ -51,7 +51,7 @@ static void ws_build_buf(uint8_t *grb) {
 static void ws_init(void) {
     RCC->APB1PCENR |= RCC_APB1Periph_TIM2;
     RCC->AHBPCENR  |= RCC_AHBPeriph_DMA1;
-    RCC->APB2PCENR |= RCC_APB2Periph_GPIOA;
+    RCC->APB2PCENR |= RCC_APB2Periph_AFIO | RCC_APB2Periph_GPIOA;
 
     /* PA3 = TIM2_CH4 alternate-function push-pull 50 MHz
      * CFGLR bits [15:12] = CNF:MODE = 1011 = 0xB */
@@ -92,6 +92,7 @@ static void ws_show(uint8_t *grb) {
     DMA1_Channel2->CNTR   = WS_BUF_LEN;
     DMA1_Channel2->MADDR  = (uint32_t)ws_dma_buf;
     DMA1_Channel2->CFGR  |= DMA_CFGR1_EN;
+    TIM2->SWEVGR = TIM_UG;  /* force update -> triggers first DMA transfer */
     /* Poll until complete (~315 us for 8 LEDs) */
     while (!(DMA1->INTFR & DMA1_IT_TC2));
     DMA1->INTFCR = DMA1_IT_TC2;
@@ -236,13 +237,6 @@ static void cdc_send(const uint8_t *buf, int len) {
 int main(void) {
     ws_init();
     USBFSSetup();
-
-    /* Brief white flash on boot -> confirms firmware is alive */
-    set_all(20, 20, 20);
-    show();
-    Delay_Ms(300);
-    set_all(0, 0, 0);
-    show();
 
     while (1) {
         __WFI();
