@@ -38,8 +38,6 @@
 #define WS_BUF_LEN     (LED_COUNT * 24 + WS_RESET_BITS)
 
 static uint16_t ws_dma_buf[WS_BUF_LEN] __attribute__((aligned(4)));
-static volatile uint8_t ws_busy = 0;
-
 static void ws_build_buf(uint8_t *grb) {
     uint16_t *p = ws_dma_buf;
     for (int i = 0; i < LED_COUNT * 3; i++) {
@@ -76,22 +74,18 @@ static void ws_init(void) {
     DMA1_Channel2->CFGR  = 0;
     DMA1_Channel2->PADDR = (uint32_t)&TIM2->CH4CVR;
     DMA1_Channel2->CFGR  =
-        DMA_CFGR1_TCIE  |   /* TC interrupt */
         DMA_CFGR1_DIR   |   /* memory -> peripheral */
         DMA_CFGR1_MINC  |   /* memory address increments */
         DMA_CFGR1_PSIZE_0 | /* peripheral 16-bit */
         DMA_CFGR1_MSIZE_0 | /* memory 16-bit */
         DMA_CFGR1_PL_1;     /* high priority */
 
-    NVIC_EnableIRQ(DMA1_Channel2_IRQn);
 
     /* Start TIM2: idles with CCR=0 (PA3 low) until first DMA transfer */
     TIM2->CTLR1 |= TIM_CEN;
 }
 
 static void ws_show(uint8_t *grb) {
-    while (ws_busy);
-    ws_busy = 1;
     ws_build_buf(grb);
 
     DMA1_Channel2->CFGR  &= ~DMA_CFGR1_EN;
@@ -293,3 +287,4 @@ int main(void) {
         __WFI();
     }
 }
+
