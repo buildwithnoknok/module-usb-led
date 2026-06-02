@@ -31,9 +31,9 @@
  * ============================================================ */
 
 #define LED_COUNT      8
-#define WS_PERIOD      90
-#define WS_T1H         58
-#define WS_T0H         28
+#define WS_PERIOD      180   /* 1.25 us at 144 MHz */
+#define WS_T1H         115   /* ~0.8 us at 144 MHz */
+#define WS_T0H         58    /* ~0.4 us at 144 MHz */
 #define WS_RESET_BITS  60
 #define WS_BUF_LEN     (LED_COUNT * 24 + WS_RESET_BITS)
 
@@ -87,19 +87,14 @@ static void ws_init(void) {
 
 static void ws_show(uint8_t *grb) {
     ws_build_buf(grb);
-
     DMA1_Channel2->CFGR  &= ~DMA_CFGR1_EN;
+    DMA1->INTFCR = DMA1_IT_TC2;            /* clear any stale TC flag */
     DMA1_Channel2->CNTR   = WS_BUF_LEN;
     DMA1_Channel2->MADDR  = (uint32_t)ws_dma_buf;
     DMA1_Channel2->CFGR  |= DMA_CFGR1_EN;
-}
-
-void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt));
-void DMA1_Channel2_IRQHandler(void) {
-    if (DMA1->INTFR & DMA1_IT_TC2) {
-        DMA1->INTFCR = DMA1_IT_TC2;
-        ws_busy = 0;
-    }
+    /* Poll until complete (~315 us for 8 LEDs) */
+    while (!(DMA1->INTFR & DMA1_IT_TC2));
+    DMA1->INTFCR = DMA1_IT_TC2;
 }
 
 /* ============================================================
@@ -233,46 +228,12 @@ static void cdc_send(const uint8_t *buf, int len) {
     USBFS_SendEndpointNEW(1, (uint8_t*)buf, len, 1);
 }
 
-/* ============================================================
- * Clock: switch to HSE (24 MHz crystal) x PLL x3 = 72 MHz
- * USB prescaler /1.5 -> 48 MHz
- * ============================================================ */
-
-static void clock_switch_to_hse72(void) {
-    /* 1. Back to HSI (safe intermediate) */
-    RCC->CFGR0 = (RCC->CFGR0 & ~RCC_SW) | RCC_SW_HSI;
-    while ((RCC->CFGR0 & RCC_SWS) != RCC_SWS_HSI);
-
-    /* 2. Disable PLL */
-    RCC->CTLR &= ~RCC_PLLON;
-    while (RCC->CTLR & RCC_PLLRDY);
-
-    /* 3. Enable HSE (24 MHz crystal) */
-    RCC->CTLR |= RCC_HSEON;
-    while (!(RCC->CTLR & RCC_HSERDY));
-
-    /* 4. Flash wait states = 2 for 72 MHz (bits [2:0] of ACTLR) */
-    FLASH->ACTLR = (FLASH->ACTLR & ~0x07UL) | 0x02UL;
-
-    /* 5. PLL: HSE (no div) x3 = 72 MHz; USBPRE=0 -> /1.5 = 48 MHz */
-    RCC->CFGR0 = (RCC->CFGR0 & ~(RCC_PLLSRC | RCC_PLLXTPRE | RCC_PLLMULL))
-               | RCC_PLLSRC_HSE | RCC_PLLXTPRE_HSE | RCC_PLLMULL3;
-
-    /* 6. Enable PLL, wait ready */
-    RCC->CTLR |= RCC_PLLON;
-    while (!(RCC->CTLR & RCC_PLLRDY));
-
-    /* 7. Switch to PLL */
-    RCC->CFGR0 = (RCC->CFGR0 & ~RCC_SW) | RCC_SW_PLL;
-    while ((RCC->CFGR0 & RCC_SWS) != RCC_SWS_PLL);
-}
 
 /* ============================================================
  * Main
  * ============================================================ */
 
 int main(void) {
-    clock_switch_to_hse72();
     ws_init();
     USBFSSetup();
 
