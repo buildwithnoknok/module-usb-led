@@ -10,9 +10,9 @@ ADDITIONAL_C_FILES :=
 
 include $(CH32FUN_DIR)/ch32fun/ch32fun.mk
 
-# Point to the fsusb USB device library in ch32fun extralibs
-CFLAGS += -I$(CH32FUN_DIR)/extralibs
-EXTRA_C_FILES += $(CH32FUN_DIR)/extralibs/fsusb.c
+# Point to the USBD (FSDEV) USB device library in ch32fun extralibs
+CFLAGS += -I$(CH32FUN_DIR)/extralibs -include stdio.h
+EXTRA_C_FILES += $(CH32FUN_DIR)/extralibs/usbd.c
 
 flash:  cv_flash
 clean:  cv_clean
