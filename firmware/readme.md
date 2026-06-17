@@ -39,7 +39,11 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 
 ## Firmware Change Record
 
-### v1.4 — first working release (current)
+### v1.5 — adds firmware version query (current)
+- **`0xB1` GET_VERSION command** (noknok ecosystem standard, command range 0xB0–0xBF). The module replies with 4 bytes: `[PROTOCOL_VERSION, FW_MAJOR, FW_MINOR, FW_PATCH]` = `0x01, 1, 5, 0`. Lets the host (Pico or PC) read which firmware a module is running — needed by the OTA update flow. Matches the I2C modules' `0xB1` convention.
+- No other behavioural changes from v1.4.
+
+### v1.4 — first working release
 - **USB stack switched from USBFS (fsusb) to USBD (FSDEV).** On this board the USBFS controller's D+ pull-up is not host-visible, so it never enumerated; the USBD/FSDEV controller (pull-up via `EXTEN_USBD_PU_EN`, the same path the WCH bootloader uses) enumerates reliably as a USB CDC device.
 - **Manual clock bring-up: HSE 24 MHz × 2 = 48 MHz** (crystal-accurate 48 MHz USB clock). ch32fun's automatic CH32V203 clock setup does not work for this part (no flash wait-states above 24 MHz; it disables HSI mid-switch), so the firmware boots on the internal HSI and switches to the crystal + PLL itself.
 - **Behaviour:** dim-white boot flash on power-up, then enumerates as "noknok LEDs" (VID `0x1209` / PID `0x4E4E`). LED commands are sent as raw bytes over the CDC data endpoint.
@@ -48,8 +52,8 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 ### v1.0 – v1.3 — bring-up (superseded, non-functional)
 - Early builds used the USBFS (fsusb) stack and ch32fun's default 144 MHz clock. They did not run / did not enumerate due to the CH32V203 clock issues described under v1.4. Superseded.
 
-### v1.5 — experimental, reverted (not released)
-- Added full CDC line-coding handling so standard host serial APIs (e.g. .NET `SerialPort.Open`) could open the port. Caused Windows "Code 10 — device cannot start"; root cause not isolated, so it was reverted to v1.4. (PC tools instead open the port via a raw handle / pyserial, which works.)
+### Abandoned experiment — full CDC line-coding (not released, no version assigned)
+- An attempt (between v1.4 and v1.5) to add full CDC line-coding so standard host serial APIs (e.g. .NET `SerialPort.Open`) could open the port. Caused Windows "Code 10 — device cannot start"; root cause not isolated, so it was dropped. (PC tools instead open the port via a raw handle / pyserial, which works.)
 
 ## Known limitations
 - The minimal CDC implementation does not fully answer line-coding requests, so .NET `SerialPort.Open()` is fussy. Use the provided PowerShell/Python tools (raw handle / pyserial), or `usb.core` raw bulk on the Pico.
