@@ -171,6 +171,19 @@ class NoknokLEDs:
         except (serial.SerialException, OSError):
             return False
 
+    def version(self):
+        """
+        Send 0xB1 GET_VERSION; returns (protocol, major, minor, patch) or None.
+        Requires firmware v1.5+ (older firmware does not answer 0xB1).
+        """
+        try:
+            self._ser.reset_input_buffer()
+            self._send(bytes([0xB1]))
+            r = self._ser.read(4)
+            return tuple(r) if len(r) == 4 else None
+        except (serial.SerialException, OSError):
+            return None
+
     # â”€â”€ Animations (blocking; Ctrl-C to stop) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def rainbow(self, *, delay: float = 0.02, cycles: int = 0):
         """Rolling rainbow. cycles=0 runs until interrupted."""
@@ -257,6 +270,10 @@ def _main(argv):
     try:
         if cmd == "off":
             leds.off()
+        elif cmd == "version":
+            v = leds.version()
+            print(f"firmware v{v[1]}.{v[2]}.{v[3]} (protocol {v[0]})" if v
+                  else "no version reply (firmware older than v1.5?)")
         elif cmd == "all":
             leds.set_all(int(args[1]), int(args[2]), int(args[3]))
         elif cmd == "pixel":
