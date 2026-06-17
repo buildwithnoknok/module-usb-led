@@ -32,9 +32,15 @@ public static class ComRaw {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
   static extern SafeFileHandle CreateFile(string name, uint access, uint share,
       IntPtr sa, uint disp, uint flags, IntPtr templ);
+  [StructLayout(LayoutKind.Sequential)]
+  struct COMMTIMEOUTS { public uint RI, RM, RC, WM, WC; }
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern bool SetCommTimeouts(SafeFileHandle h, ref COMMTIMEOUTS t);
   public static FileStream Open(string port){
     var h = CreateFile(@"\\.\"+port, 0xC0000000, 0, IntPtr.Zero, 3, 0x80, IntPtr.Zero);
     if (h.IsInvalid) throw new IOException("Cannot open "+port+" (err "+Marshal.GetLastWin32Error()+")");
+    // Read returns after 500 ms even if fewer bytes arrive (so reads can't hang).
+    var t = new COMMTIMEOUTS(); t.RC = 500; SetCommTimeouts(h, ref t);
     return new FileStream(h, FileAccess.ReadWrite);
   }
 }
@@ -81,6 +87,20 @@ function Send([byte[]]$b){ $fs.Write($b,0,$b.Length); $fs.Flush() }
 try {
     switch ($verb) {
         'off'    { Send 0x00 }
+        'version' {
+            Send (0xB1)                                   # GET_VERSION
+            $buf = New-Object byte[] 4
+            $n = $fs.Read($buf, 0, 4)
+            if ($n -ge 4) { "noknok LEDs firmware v{0}.{1}.{2}  (protocol {3})" -f $buf[1],$buf[2],$buf[3],$buf[0] }
+            else { "No version reply ($n bytes) - firmware older than v1.5?" }
+        }
+        'id'      {
+            Send (0xF0)                                   # identity query
+            $buf = New-Object byte[] 3
+            $n = $fs.Read($buf, 0, 3)
+            if ($n -ge 3) { "identity: {0:X2} {1:X2} type={2}" -f $buf[0],$buf[1],$buf[2] }
+            else { "No identity reply ($n bytes)" }
+        }
         'all'    { if ($nums.Count -lt 3) { throw "all needs: R G B  (e.g. all 255 0 0)" }
                    Send (0x01,(Clamp $nums[0]),(Clamp $nums[1]),(Clamp $nums[2])) }
         'pixel'  { if ($nums.Count -lt 4) { throw "pixel needs: index R G B  (e.g. pixel 3 0 255 0)" }
@@ -108,7 +128,7 @@ try {
                 $step = ($step + 4) % 256
             }
         }
-        default  { Write-Host "Unknown command '$verb'. Try: list | all R G B | pixel i R G B | bright N | off | rainbow" }
+        default  { Write-Host "Unknown command '$verb'. Try: list | all R G B | pixel i R G B | bright N | off | rainbow | version | id" }
     }
 }
 finally { $fs.Close() }
