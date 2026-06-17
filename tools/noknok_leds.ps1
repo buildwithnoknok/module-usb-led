@@ -52,7 +52,7 @@ function Clamp([int]$v){ if($v -lt 0){0}elseif($v -gt 255){255}else{$v} }
 # Normalise the verb + numeric args
 if (-not $Cmd) { $Cmd = @('help') }
 $verb = "$($Cmd[0])".ToLower()
-$nums = @(); foreach ($a in $Cmd[1..($Cmd.Count-1)]) { $nums += [int]$a }
+$nums = @(); if ($Cmd.Count -gt 1) { foreach ($a in $Cmd[1..($Cmd.Count-1)]) { $nums += [int]$a } }
 
 if ($verb -eq 'help' -or $verb -eq '-h' -or $verb -eq '--help') {
     Get-Content $PSCommandPath | Select-Object -First 22 | ForEach-Object { $_ -replace '^[<#>]*','' }
