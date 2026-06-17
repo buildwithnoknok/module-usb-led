@@ -1,5 +1,5 @@
-/*
- * noknok LEDs Module â€” Firmware v1.4 (USBD / FSDEV)
+﻿/*
+ * noknok LEDs Module â€” Firmware v1.5 (USBD / FSDEV)
  * MCU:   CH32V203G6U6
  * CLOCK: boots on HSI, manual switch to HSE(24MHz) x2 = 48 MHz (crystal-accurate).
  * USB:   USBD (FSDEV) controller via extralibs/usbd.c â€” the SAME controller the
@@ -10,12 +10,20 @@
  *        WS2812b @48MHz TIM2: 1 bit = 60 ticks = 1.25 us. T1H=38, T0H=19.
  *
  * Command protocol (binary over USB serial):
- *   0x00 / 0x01 RGB / 0x02 i RGB / 0x03 B / 0x04 [24] / 0x05 / 0xF0(->4E 4E 04)
+ *   0x00 / 0x01 RGB / 0x02 i RGB / 0x03 B / 0x04 [24] / 0x05 / 0xF0(->4E 4E 04) / 0xB1(->PROTO MAJ MIN PAT)
  */
 
 #include "ch32fun.h"
 #include "usbd.h"
 #include <string.h>
+
+/* Firmware version - reported via 0xB1 GET_VERSION (noknok ecosystem standard,
+ * command range 0xB0-0xBF). PROTOCOL_VERSION = shared noknok protocol level;
+ * FW_VERSION_* = this firmware's semver (keep equal to the release tag). */
+#define PROTOCOL_VERSION  0x01
+#define FW_VERSION_MAJOR  1
+#define FW_VERSION_MINOR  5
+#define FW_VERSION_PATCH  0
 
 /* ============================================================
  * Manual clock: HSI boot -> HSE 24 MHz x2 = 48 MHz
@@ -132,6 +140,7 @@ static void execute(void) {
             show(); break;
         case 0x05: show(); break;
         case 0xF0: { static const uint8_t id[3]={0x4E,0x4E,0x04}; USBD_SendEndpoint(3, (uint8_t*)id, 3); break; }
+        case 0xB1: { static const uint8_t ver[4]={PROTOCOL_VERSION,FW_VERSION_MAJOR,FW_VERSION_MINOR,FW_VERSION_PATCH}; USBD_SendEndpoint(3, (uint8_t*)ver, 4); break; }
     }
 }
 
@@ -146,6 +155,7 @@ static void process_byte(uint8_t b) {
             case 0x04: cmd_need=24; break;
             case 0x05: cmd_need=0; break;
             case 0xF0: cmd_need=0; break;
+            case 0xB1: cmd_need=0; break;
             default: return;
         }
         if (cmd_need==0) execute(); else ps=PARSE_WAIT;
