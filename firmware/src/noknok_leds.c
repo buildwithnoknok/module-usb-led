@@ -1,16 +1,32 @@
-﻿/*
- * noknok LEDs Module â€” Firmware v1.5 (USBD / FSDEV)
+/*
+ * noknok LEDs Module - Firmware v1.6 (USBD / FSDEV)
  * MCU:   CH32V203G6U6
  * CLOCK: boots on HSI, manual switch to HSE(24MHz) x2 = 48 MHz (crystal-accurate).
- * USB:   USBD (FSDEV) controller via extralibs/usbd.c â€” the SAME controller the
- *        WCH bootloader uses (D+ pull-up via EXTEN_USBD_PU_EN). fsusb/USBFS did
- *        NOT assert a host-visible pull-up on this board; USBD does.
+ * USB:   USBD (FSDEV) controller via extralibs/usbd.c - the SAME controller the
+ *        WCH bootloader uses (D+ pull-up via EXTEN_USBD_PU_EN).
  *        48 MHz core -> USBPRE=DIV1 -> 48 MHz USB clock.
  * LEDs:  8x WS2812b on PA3 via TIM2_CH4 + DMA1_Channel2 (polling).
- *        WS2812b @48MHz TIM2: 1 bit = 60 ticks = 1.25 us. T1H=38, T0H=19.
+ * TIME:  TIM3 free-running 1 kHz (1 ms/tick) timebase for durations + animations.
  *
- * Command protocol (binary over USB serial):
- *   0x00 / 0x01 RGB / 0x02 i RGB / 0x03 B / 0x04 [24] / 0x05 / 0xF0(->4E 4E 04) / 0xB1(->PROTO MAJ MIN PAT)
+ * v1.6 changes:
+ *   - UNIQUE USB SERIAL: iSerialNumber is built at boot from the 96-bit chip UID
+ *     (ESIG at 0x1FFFF7E8) -> 24 hex chars, so every module is uniquely
+ *     identifiable on the USB bus (USB counterpart of the I2C UID).
+ *   - 0x10 SET_LED: full per-LED control in one command (index/RGB/brightness/duration).
+ *   - 0x20 PLAY_PRESET: 5 non-blocking animations (rainbow/breathe/chase/wipe/twinkle),
+ *     fire-and-forget on the module (mirrors the buzzer's preset tunes).
+ *
+ * Command protocol (binary over USB serial; see module README):
+ *   0x00                              all off
+ *   0x01 R G B                        all one colour
+ *   0x02 i R G B                      one LED
+ *   0x03 B                            global brightness
+ *   0x04 [24]                         8x RGB at once
+ *   0x05                              show (re-latch current frame)
+ *   0x10 i R G B BR durLo durHi       SET_LED: i(0xFF=all), brightness, duration ms (0=hold)
+ *   0x20 preset speed R G B           PLAY_PRESET 1..5 (speed=ms/step, 0=default)
+ *   0xF0  -> 4E 4E 04                 identity
+ *   0xB1  -> PROTO MAJ MIN PAT        GET_VERSION
  */
 
 #include "ch32fun.h"
@@ -22,8 +38,28 @@
  * FW_VERSION_* = this firmware's semver (keep equal to the release tag). */
 #define PROTOCOL_VERSION  0x01
 #define FW_VERSION_MAJOR  1
-#define FW_VERSION_MINOR  5
+#define FW_VERSION_MINOR  6
 #define FW_VERSION_PATCH  0
+
+/* ============================================================
+ * Unique USB serial number (built from chip UID at boot)
+ * Raw USB string descriptor: [bLength=50, bDescriptorType=3, 24x UTF-16LE hex].
+ * usb_config.h references this via `extern uint8_t noknok_serial[]`.
+ * ============================================================ */
+uint8_t noknok_serial[2 + 24 * 2];
+
+static void build_serial(void) {
+    const volatile uint8_t *uid = (const volatile uint8_t *)0x1FFFF7E8; /* ESIG UNIID, 96-bit */
+    static const char H[] = "0123456789ABCDEF";
+    noknok_serial[0] = sizeof(noknok_serial);  /* bLength = 50 */
+    noknok_serial[1] = 0x03;                    /* bDescriptorType = String */
+    for (int i = 0; i < 12; i++) {              /* 12 UID bytes -> 24 hex chars */
+        uint8_t b = uid[i];
+        uint8_t hi = H[b >> 4], lo = H[b & 0x0F];
+        noknok_serial[2 + (i * 2) * 2]     = hi;  noknok_serial[2 + (i * 2) * 2 + 1]     = 0x00;
+        noknok_serial[2 + (i * 2 + 1) * 2] = lo;  noknok_serial[2 + (i * 2 + 1) * 2 + 1] = 0x00;
+    }
+}
 
 /* ============================================================
  * Manual clock: HSI boot -> HSE 24 MHz x2 = 48 MHz
@@ -45,6 +81,19 @@ static int clock_to_hse_48(void) {
     while (t--) { if ((RCC->CFGR0 & RCC_SWS) == 0x08) break; }
     return ((RCC->CFGR0 & RCC_SWS) == 0x08);
 }
+
+/* ============================================================
+ * TIM3 free-running 1 ms timebase
+ * ============================================================ */
+static void timebase_init(void) {
+    RCC->APB1PCENR |= RCC_APB1Periph_TIM3;
+    TIM3->PSC    = 48000 - 1;     /* 48 MHz / 48000 = 1 kHz -> 1 tick per ms */
+    TIM3->ATRLR  = 0xFFFF;
+    TIM3->CTLR1  = TIM_ARPE;
+    TIM3->SWEVGR = TIM_UG;
+    TIM3->CTLR1 |= TIM_CEN;
+}
+static inline uint16_t now_ms(void) { return (uint16_t)TIM3->CNT; }
 
 /* ============================================================
  * WS2812b driver (polling) @48MHz
@@ -119,6 +168,84 @@ static void set_all(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 /* ============================================================
+ * Per-LED timed-off (0x10 duration) + animation engine (0x20)
+ * ============================================================ */
+static uint16_t led_deadline[LED_COUNT];   /* TIM3 ms value at which the LED turns off */
+static uint8_t  led_timed[LED_COUNT];      /* 1 = a deadline is armed for this LED */
+
+static uint8_t  anim = 0;                   /* 0 = none, 1..5 = active preset */
+static uint8_t  anim_r, anim_g, anim_b;     /* preset base colour */
+static uint16_t anim_step_ms = 40;          /* ms between animation steps */
+static uint16_t anim_last;                  /* last step timestamp */
+static uint16_t anim_phase;                 /* animation phase counter */
+
+static uint32_t rng_state = 0xA5A5F00D;
+static inline uint32_t rng(void) {
+    rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
+    return rng_state;
+}
+
+/* Stop any running animation and clear all pending timed-off deadlines. Called
+ * by every immediate command so manual control always wins. */
+static void cancel_dynamic(void) {
+    anim = 0;
+    for (int i = 0; i < LED_COUNT; i++) led_timed[i] = 0;
+}
+
+/* NeoPixel-style colour wheel: hue 0..255 -> RGB. */
+static void wheel(uint8_t pos, uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (pos < 85)       { *r = 255 - pos*3; *g = pos*3;       *b = 0; }
+    else if (pos < 170) { pos -= 85;  *r = 0; *g = 255 - pos*3; *b = pos*3; }
+    else                { pos -= 170; *r = pos*3; *g = 0;     *b = 255 - pos*3; }
+}
+
+static void anim_render(void) {
+    switch (anim) {
+        case 1: /* rainbow rotate */
+            for (int i = 0; i < LED_COUNT; i++)
+                wheel((uint8_t)(anim_phase + i * (256 / LED_COUNT)), &fr[i], &fg[i], &fb[i]);
+            anim_phase += 4;
+            break;
+        case 2: { /* breathe (triangle on base colour) */
+            uint8_t t = anim_phase & 0xFF;
+            uint8_t lvl = (t < 128) ? (uint8_t)(t * 2) : (uint8_t)((255 - t) * 2);
+            for (int i = 0; i < LED_COUNT; i++) {
+                fr[i] = (uint16_t)anim_r * lvl / 255;
+                fg[i] = (uint16_t)anim_g * lvl / 255;
+                fb[i] = (uint16_t)anim_b * lvl / 255;
+            }
+            anim_phase += 4;
+            break;
+        }
+        case 3: /* theatre chase (every 3rd LED, base colour) */
+            for (int i = 0; i < LED_COUNT; i++) {
+                uint8_t on = (((i + anim_phase) % 3) == 0);
+                fr[i] = on ? anim_r : 0; fg[i] = on ? anim_g : 0; fb[i] = on ? anim_b : 0;
+            }
+            anim_phase += 1;
+            break;
+        case 4: { /* colour wipe (fill up then clear, repeat) */
+            uint8_t k = anim_phase % (LED_COUNT + 1);
+            for (int i = 0; i < LED_COUNT; i++) {
+                uint8_t on = (i < k);
+                fr[i] = on ? anim_r : 0; fg[i] = on ? anim_g : 0; fb[i] = on ? anim_b : 0;
+            }
+            anim_phase += 1;
+            break;
+        }
+        case 5: /* twinkle (random sparkle in base colour) */
+            for (int i = 0; i < LED_COUNT; i++) {
+                if ((rng() & 0x07) == 0) { fr[i] = anim_r; fg[i] = anim_g; fb[i] = anim_b; }
+                else                     { fr[i] = 0; fg[i] = 0; fb[i] = 0; }
+            }
+            anim_phase += 1;
+            break;
+        default: return;
+    }
+    show();
+}
+
+/* ============================================================
  * Command parser
  * ============================================================ */
 typedef enum { PARSE_IDLE, PARSE_WAIT } ParseState;
@@ -127,18 +254,51 @@ static uint8_t cmd_byte=0, cmd_buf[24], cmd_need=0, cmd_got=0;
 
 static void execute(void) {
     switch (cmd_byte) {
-        case 0x00: set_all(0,0,0); show(); break;
-        case 0x01: set_all(cmd_buf[0],cmd_buf[1],cmd_buf[2]); show(); break;
+        case 0x00: cancel_dynamic(); set_all(0,0,0); show(); break;
+        case 0x01: cancel_dynamic(); set_all(cmd_buf[0],cmd_buf[1],cmd_buf[2]); show(); break;
         case 0x02:
+            cancel_dynamic();
             if (cmd_buf[0] < LED_COUNT) {
                 fr[cmd_buf[0]]=cmd_buf[1]; fg[cmd_buf[0]]=cmd_buf[2]; fb[cmd_buf[0]]=cmd_buf[3]; show();
             }
             break;
         case 0x03: brightness = cmd_buf[0]; show(); break;
         case 0x04:
+            cancel_dynamic();
             for (int i=0;i<LED_COUNT;i++){ fr[i]=cmd_buf[i*3+0]; fg[i]=cmd_buf[i*3+1]; fb[i]=cmd_buf[i*3+2]; }
             show(); break;
         case 0x05: show(); break;
+
+        case 0x10: { /* SET_LED: i R G B brightness durLo durHi */
+            cancel_dynamic();
+            uint8_t idx = cmd_buf[0], r = cmd_buf[1], g = cmd_buf[2], b = cmd_buf[3];
+            brightness = cmd_buf[4];
+            uint16_t dur = (uint16_t)cmd_buf[5] | ((uint16_t)cmd_buf[6] << 8);
+            uint16_t deadline = now_ms() + dur;
+            if (idx == 0xFF) {
+                set_all(r, g, b);
+                if (dur) for (int i=0;i<LED_COUNT;i++){ led_deadline[i]=deadline; led_timed[i]=1; }
+            } else if (idx < LED_COUNT) {
+                fr[idx]=r; fg[idx]=g; fb[idx]=b;
+                if (dur) { led_deadline[idx]=deadline; led_timed[idx]=1; }
+            }
+            show();
+            break;
+        }
+        case 0x20: { /* PLAY_PRESET: preset speed R G B */
+            uint8_t p = cmd_buf[0];
+            if (p >= 1 && p <= 5) {
+                for (int i=0;i<LED_COUNT;i++) led_timed[i]=0;  /* drop pending timed-offs */
+                anim = p;
+                anim_step_ms = cmd_buf[1] ? cmd_buf[1] : 40;
+                anim_r = cmd_buf[2]; anim_g = cmd_buf[3]; anim_b = cmd_buf[4];
+                anim_phase = 0;
+                anim_last = now_ms();
+                anim_render();   /* draw first frame immediately */
+            }
+            break;
+        }
+
         case 0xF0: { static const uint8_t id[3]={0x4E,0x4E,0x04}; USBD_SendEndpoint(3, (uint8_t*)id, 3); break; }
         case 0xB1: { static const uint8_t ver[4]={PROTOCOL_VERSION,FW_VERSION_MAJOR,FW_VERSION_MINOR,FW_VERSION_PATCH}; USBD_SendEndpoint(3, (uint8_t*)ver, 4); break; }
     }
@@ -154,6 +314,8 @@ static void process_byte(uint8_t b) {
             case 0x03: cmd_need=1; break;
             case 0x04: cmd_need=24; break;
             case 0x05: cmd_need=0; break;
+            case 0x10: cmd_need=7; break;
+            case 0x20: cmd_need=5; break;
             case 0xF0: cmd_need=0; break;
             case 0xB1: cmd_need=0; break;
             default: return;
@@ -184,7 +346,9 @@ int USBFS_SendEndpointNEW(int endp, uint8_t *data, int len, int copy) {
  * ============================================================ */
 int main(void) {
     clock_to_hse_48();        /* crystal-accurate 48 MHz first */
+    build_serial();           /* fill iSerialNumber from chip UID before enumeration */
     USBDSetup();              /* FSDEV USB device (asserts EXTEN_USBD_PU_EN) */
+    timebase_init();          /* TIM3 1 ms tick */
     ws_init();                /* re-enables DMA1 after USBDSetup AHBPCENR overwrite */
 
     /* Boot flash: dim white 300 ms */
@@ -194,6 +358,24 @@ int main(void) {
 
     while (1) {
         poll_input();         /* dispatches received bytes to handle_usbd_input */
-        Delay_Ms(2);
+
+        uint16_t t = now_ms();
+
+        /* Service per-LED timed-off deadlines (0x10 duration). */
+        uint8_t need_show = 0;
+        for (int i = 0; i < LED_COUNT; i++) {
+            if (led_timed[i] && (int16_t)(t - led_deadline[i]) >= 0) {
+                fr[i] = fg[i] = fb[i] = 0; led_timed[i] = 0; need_show = 1;
+            }
+        }
+        if (need_show) show();
+
+        /* Service the active animation (0x20). */
+        if (anim && (int16_t)(t - anim_last) >= (int16_t)anim_step_ms) {
+            anim_last += anim_step_ms;
+            anim_render();
+        }
+
+        Delay_Ms(1);
     }
 }

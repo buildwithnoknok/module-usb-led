@@ -143,11 +143,11 @@ const static struct usb_string_descriptor_struct string2 __attribute__((section(
 	3,
 	FUSB_STR_PRODUCT
 };
-const static struct usb_string_descriptor_struct string3 __attribute__((section(".rodata")))  = {
-	sizeof(FUSB_STR_SERIAL),
-	3,
-	FUSB_STR_SERIAL
-};
+/* Serial number is built at runtime from the CH32V203 chip UID (see
+ * build_serial() in noknok_leds.c) so every physical module enumerates with a
+ * unique iSerialNumber - the USB counterpart of the I2C hardware UID.
+ * Raw USB string descriptor bytes: [bLength=50, bDescriptorType=3, 24x UTF-16LE hex]. */
+extern uint8_t noknok_serial[];
 
 // This table defines which descriptor data is sent for each specific
 // request from the host (in wValue and wIndex).
@@ -163,7 +163,7 @@ const static struct descriptor_list_struct {
 	{0x00000300, (const uint8_t *)&language, 4},
 	{0x04090301, (const uint8_t *)&string1, string1.bLength},
 	{0x04090302, (const uint8_t *)&string2, string2.bLength},
-	{0x04090303, (const uint8_t *)&string3, string3.bLength}
+	{0x04090303, noknok_serial, 50}  // serial: runtime-built from chip UID (noknok_leds.c)
 };
 #define DESCRIPTOR_LIST_ENTRIES ((sizeof(descriptor_list))/(sizeof(struct descriptor_list_struct)) )
 
