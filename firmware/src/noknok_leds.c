@@ -27,6 +27,16 @@
  *   0x20 preset speed R G B           PLAY_PRESET 1..5 (speed=ms/step, 0=default)
  *   0xF0  -> 4E 4E 04                 identity
  *   0xB1  -> PROTO MAJ MIN PAT        GET_VERSION
+ *   0xB0  -> (no reply)               ENTER_BOOTLOADER: hand off to the noknok USB bootloader (OTA)
+ *
+ * v1.8 changes (OTA-capable, bootloader-hosted):
+ *   - App relinked at 0x2000 (app.ld) to run UNDER the noknok USB bootloader
+ *     (module-USB-bootloader), with the top 16 B of RAM reserved as the handoff cell.
+ *   - 0xB0 ENTER_BOOTLOADER: writes the handoff magic (0x6E6B4F54 @ 0x200027F0) +
+ *     NVIC_SystemReset(); the bootloader catches it on reset and stays in USB
+ *     flashing mode. Same proven pattern as the I2C modules.
+ *   - Requires the bootloader flashed once via the BOOT0 jumper; thereafter the
+ *     app updates over USB (tools/usb_flash.ps1 in module-USB-bootloader).
  */
 
 #include "ch32fun.h"
@@ -38,7 +48,7 @@
  * FW_VERSION_* = this firmware's semver (keep equal to the release tag). */
 #define PROTOCOL_VERSION  0x01
 #define FW_VERSION_MAJOR  1
-#define FW_VERSION_MINOR  6
+#define FW_VERSION_MINOR  8
 #define FW_VERSION_PATCH  0
 
 /* ============================================================
@@ -252,6 +262,24 @@ typedef enum { PARSE_IDLE, PARSE_WAIT } ParseState;
 static ParseState ps = PARSE_IDLE;
 static uint8_t cmd_byte=0, cmd_buf[24], cmd_need=0, cmd_got=0;
 
+/* ------------------------------------------------------------
+ * 0xB0 ENTER_BOOTLOADER - hand off to the noknok USB bootloader for OTA.
+ * Writes the agreed magic to the no-init handoff cell (top 16 B of RAM, kept
+ * out of the linker's RAM region by app.ld so it survives a warm reset), then
+ * a system reset. The bootloader runs first on every reset, sees the magic,
+ * and stays in USB flashing mode. Same proven pattern as the I2C modules, and
+ * NVIC_SystemReset is the reset we validated reboots cleanly on this chip.
+ * NOTE: this app must be built with app.ld (linked at 0x2000 + handoff cell).
+ * ------------------------------------------------------------ */
+#define HANDOFF_CELL    (*(volatile uint32_t *)0x200027F0u)
+#define ENTER_BL_MAGIC  0x6E6B4F54u   /* 'nkOT' - must match the bootloader */
+
+static void enter_bootloader(void) {
+    HANDOFF_CELL = ENTER_BL_MAGIC;
+    NVIC_SystemReset();
+    while (1) { }   /* unreachable */
+}
+
 static void execute(void) {
     switch (cmd_byte) {
         case 0x00: cancel_dynamic(); set_all(0,0,0); show(); break;
@@ -301,6 +329,7 @@ static void execute(void) {
 
         case 0xF0: { static const uint8_t id[3]={0x4E,0x4E,0x04}; USBD_SendEndpoint(3, (uint8_t*)id, 3); break; }
         case 0xB1: { static const uint8_t ver[4]={PROTOCOL_VERSION,FW_VERSION_MAJOR,FW_VERSION_MINOR,FW_VERSION_PATCH}; USBD_SendEndpoint(3, (uint8_t*)ver, 4); break; }
+        case 0xB0: enter_bootloader(); break;  /* ENTER_BOOTLOADER (no reply; resets) */
     }
 }
 
@@ -318,6 +347,7 @@ static void process_byte(uint8_t b) {
             case 0x20: cmd_need=5; break;
             case 0xF0: cmd_need=0; break;
             case 0xB1: cmd_need=0; break;
+            case 0xB0: cmd_need=0; break;
             default: return;
         }
         if (cmd_need==0) execute(); else ps=PARSE_WAIT;
