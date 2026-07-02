@@ -9,11 +9,11 @@ Pico drives it as a **USB host**; it can also be driven directly from a PC.
 - USB-C power + data; 2× Qwiic/Stemma-QT I2C pass-through connectors
 - **Unique per-unit USB serial** derived from the chip UID — so the Conductor can tell
   identical modules apart and map them to roles (the USB counterpart of the I2C UID)
-- Rich control: per-LED colour/brightness/timed-off in one command, plus 5 built-in
-  animations (rainbow, breathe, theatre chase, colour wipe, twinkle)
+- Rich control: per-LED colour/brightness/timed-off in one command, plus 6 built-in
+  animations (rainbow, breathe, theatre chase, colour wipe, twinkle, sundown)
 
 ## Status
-- **Firmware: v1.6 — complete** (see [firmware/readme.md](firmware/readme.md) for the
+- **Firmware: v1.8.1 — complete** (see [firmware/readme.md](firmware/readme.md) for the
   full command protocol, flashing instructions, and version history)
 - Hardware: v1.0
 
@@ -38,6 +38,7 @@ leds.set_pixel(3, 0, 255, 0)                      # LED 3 green
 leds.set_brightness(128)                          # global brightness
 leds.set_led(0xFF, 0, 0, 255, brightness=200, duration_ms=1000)  # all blue 1 s, then off
 leds.play_preset(leds.PRESET_RAINBOW, speed=40)  # non-blocking animation on the module
+leds.play_preset(leds.PRESET_SUNDOWN, speed=30, r=0, g=0, b=255)  # 30 min fade to off, blue
 leds.off()
 ```
 

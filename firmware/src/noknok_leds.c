@@ -1,5 +1,5 @@
 /*
- * noknok LEDs Module - Firmware v1.6 (USBD / FSDEV)
+ * noknok LEDs Module - Firmware v1.8.1 (USBD / FSDEV)
  * MCU:   CH32V203G6U6
  * CLOCK: boots on HSI, manual switch to HSE(24MHz) x2 = 48 MHz (crystal-accurate).
  * USB:   USBD (FSDEV) controller via extralibs/usbd.c - the SAME controller the
@@ -24,7 +24,9 @@
  *   0x04 [24]                         8x RGB at once
  *   0x05                              show (re-latch current frame)
  *   0x10 i R G B BR durLo durHi       SET_LED: i(0xFF=all), brightness, duration ms (0=hold)
- *   0x20 preset speed R G B           PLAY_PRESET 1..5 (speed=ms/step, 0=default)
+ *   0x20 preset speed R G B           PLAY_PRESET 1..6 (speed=ms/step, 0=default -
+ *                                     EXCEPT preset 6 SUNDOWN, where speed instead
+ *                                     means MINUTES, 0=default 30 - see below)
  *   0xF0  -> 4E 4E 04                 identity
  *   0xB1  -> PROTO MAJ MIN PAT        GET_VERSION
  *   0xB0  -> (no reply)               ENTER_BOOTLOADER: hand off to the noknok USB bootloader (OTA)
@@ -37,6 +39,22 @@
  *     flashing mode. Same proven pattern as the I2C modules.
  *   - Requires the bootloader flashed once via the BOOT0 jumper; thereafter the
  *     app updates over USB (tools/usb_flash.ps1 in module-USB-bootloader).
+ *
+ * v1.8.1 changes:
+ *   - NEW PRESET 6 = SUNDOWN: a ONE-SHOT fade from full brightness to off in the
+ *     caller-supplied colour (e.g. blue, for a "help my kid fall asleep" light).
+ *     Unlike presets 1-5 (which loop forever until the next command), SUNDOWN
+ *     runs once and then stops itself (anim=0) with the LEDs off.
+ *   - EASING: quadratic ease-out, fraction = (1 - t/total)^2, computed in Q10
+ *     fixed point (no FPU on this MCU). This is CONCAVE: brightness drops fast
+ *     at the start and crawls the last stretch down to zero, not a linear ramp.
+ *   - SPEED FIELD REPURPOSED FOR THIS PRESET ONLY: the existing `speed` byte in
+ *     0x20 PLAY_PRESET means "ms per animation step" for presets 1-5, but a
+ *     single byte of milliseconds cannot encode a useful total duration for a
+ *     multi-minute fade. For preset 6 ONLY, `speed` is reinterpreted as MINUTES
+ *     (1-255 min); 0 defaults to 30 min. This is a deliberate, flagged exception
+ *     -- not a silent redefinition -- so a future preset must NOT assume `speed`
+ *     always means ms/step without checking which preset it's serving.
  */
 
 #include "ch32fun.h"
@@ -49,7 +67,7 @@
 #define PROTOCOL_VERSION  0x01
 #define FW_VERSION_MAJOR  1
 #define FW_VERSION_MINOR  8
-#define FW_VERSION_PATCH  0
+#define FW_VERSION_PATCH  1
 
 /* ============================================================
  * Unique USB serial number (built from chip UID at boot)
@@ -183,11 +201,13 @@ static void set_all(uint8_t r, uint8_t g, uint8_t b) {
 static uint16_t led_deadline[LED_COUNT];   /* TIM3 ms value at which the LED turns off */
 static uint8_t  led_timed[LED_COUNT];      /* 1 = a deadline is armed for this LED */
 
-static uint8_t  anim = 0;                   /* 0 = none, 1..5 = active preset */
+static uint8_t  anim = 0;                   /* 0 = none, 1..6 = active preset */
 static uint8_t  anim_r, anim_g, anim_b;     /* preset base colour */
 static uint16_t anim_step_ms = 40;          /* ms between animation steps */
 static uint16_t anim_last;                  /* last step timestamp */
-static uint16_t anim_phase;                 /* animation phase counter */
+static uint16_t anim_phase;                 /* animation phase counter (also used as
+                                              * SUNDOWN's elapsed-step counter) */
+static uint16_t anim_total_steps;           /* SUNDOWN only: steps for a full fade */
 
 static uint32_t rng_state = 0xA5A5F00D;
 static inline uint32_t rng(void) {
@@ -250,6 +270,29 @@ static void anim_render(void) {
             }
             anim_phase += 1;
             break;
+        case 6: { /* SUNDOWN: one-shot fade from full brightness to off over
+                   * anim_total_steps steps, EASED (quadratic ease-out: fast
+                   * dim at the start, slow crawl to zero at the end) - see the
+                   * SUNDOWN comment block above anim_render() for the formula
+                   * and why speed means "minutes" here, not "ms/step". */
+            uint16_t t = anim_phase;                       /* elapsed steps */
+            if (t >= anim_total_steps) {
+                set_all(0, 0, 0);
+                anim = 0;                                   /* one-shot: stop, stay off */
+                break;
+            }
+            /* frac = (1 - t/total)^2, computed in Q10 fixed point (0..1024).
+             * remain10 = (1 - t/total) scaled to 0..1024 (16x16->32 bit, no FPU). */
+            uint32_t remain10 = ((uint32_t)(anim_total_steps - t) << 10) / anim_total_steps;
+            uint32_t frac10   = (remain10 * remain10) >> 10;  /* square, rescale back to Q10 */
+            for (int i = 0; i < LED_COUNT; i++) {
+                fr[i] = (uint8_t)(((uint32_t)anim_r * frac10) >> 10);
+                fg[i] = (uint8_t)(((uint32_t)anim_g * frac10) >> 10);
+                fb[i] = (uint8_t)(((uint32_t)anim_b * frac10) >> 10);
+            }
+            anim_phase += 1;
+            break;
+        }
         default: return;
     }
     show();
@@ -315,12 +358,23 @@ static void execute(void) {
         }
         case 0x20: { /* PLAY_PRESET: preset speed R G B */
             uint8_t p = cmd_buf[0];
-            if (p >= 1 && p <= 5) {
+            if (p >= 1 && p <= 6) {
                 for (int i=0;i<LED_COUNT;i++) led_timed[i]=0;  /* drop pending timed-offs */
                 anim = p;
-                anim_step_ms = cmd_buf[1] ? cmd_buf[1] : 40;
                 anim_r = cmd_buf[2]; anim_g = cmd_buf[3]; anim_b = cmd_buf[4];
                 anim_phase = 0;
+                if (p == 6) {
+                    /* SUNDOWN reinterprets `speed` as MINUTES (not ms/step) -
+                     * a 1-byte ms/step can't encode a 30-minute total duration.
+                     * speed=0 -> default 30 min. Fixed cadence: 1 render/second
+                     * (smooth enough for a slow fade, keeps anim_total_steps
+                     * within a uint16_t for up to ~18 hours). */
+                    uint8_t minutes = cmd_buf[1] ? cmd_buf[1] : 30;
+                    anim_step_ms = 1000;
+                    anim_total_steps = (uint16_t)((uint32_t)minutes * 60u);
+                } else {
+                    anim_step_ms = cmd_buf[1] ? cmd_buf[1] : 40;
+                }
                 anim_last = now_ms();
                 anim_render();   /* draw first frame immediately */
             }

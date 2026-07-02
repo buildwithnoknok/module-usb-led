@@ -4,7 +4,7 @@ Firmware for the noknok LEDs module (CH32V203G6U6 — USB, 8× WS2812b RGB).
 
 - Source: `src/` (built with [ch32fun](https://github.com/cnlohr/ch32fun); `Makefile` uses `extralibs/usbd.c`)
 - Binaries: `bin/noknok_leds.bin` and `bin/noknok_leds.hex` — current release
-- USB identity: VID `0x1209` / PID `0x4E4E`, appears as a CDC serial device ("noknok LEDs"). Each unit has a **unique serial number** derived from its chip UID (v1.6+).
+- USB identity: VID `0x1209` / PID `0x4E4E` (app) / PID `0x4E42` (bootloader). Appears as a CDC serial device ("noknok LEDs"). Each unit has a **unique serial number** derived from its chip UID (v1.6+).
 
 Firmware is licensed MIT (see `../LICENSE-firmware`). Toolchain and protocol follow the
 [noknok Ecosystem guidelines](https://github.com/buildwithnoknok/Ecosystem).
@@ -34,7 +34,7 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 | `0x04 [24 bytes]` | set all 8 LEDs: 8 × (R G B) |
 | `0x05` | explicit show |
 | `0x10 i R G B BR dLo dHi` | **SET_LED** — LED `i` (`0xFF` = all), colour, brightness, duration ms little-endian (0 = hold) |
-| `0x20 preset speed R G B` | **PLAY_PRESET** 1–5 (rainbow / breathe / theatre-chase / colour-wipe / twinkle); `speed` = ms per step (0 = default); `R G B` = base colour |
+| `0x20 preset speed R G B` | **PLAY_PRESET** 1–6 (rainbow / breathe / theatre-chase / colour-wipe / twinkle / **sundown**); `speed` = ms per step (0 = default) — **EXCEPT preset 6 (sundown), where `speed` means MINUTES instead (0 = default 30)**; `R G B` = base colour |
 | `0xF0` | identity query → module replies `0x4E 0x4E 0x04` |
 | `0xB1` | version query → replies `[PROTOCOL, MAJOR, MINOR, PATCH]` |
 
@@ -42,7 +42,31 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 
 ## Firmware Change Record
 
-### v1.6 — unique serial + rich LED control & presets (current) — released 2026-06-18
+### v1.8.1 — sundown preset (current) — released 2026-07-02
+- **New preset 6 = SUNDOWN.** `0x20 6 minutes R G B` plays a **one-shot** fade from full
+  brightness to off in the caller-supplied colour, over `minutes` minutes (not the usual
+  `speed`-as-ms/step — see below). Unlike presets 1–5, which loop forever until the next
+  command, SUNDOWN runs once and stops itself (LEDs off) at the end instead of repeating.
+  Intended for a bedtime/wind-down light (e.g. blue, 30 min).
+- **Easing is CONCAVE (quadratic ease-out), not linear:** brightness follows
+  `(1 - elapsed/total)²`, so it dims fast at the start and slows to a crawl near the end
+  (e.g. at the halfway point in time, brightness is at 25%, not 50%). Computed in Q10
+  fixed-point integer math — no FPU on this MCU, same approach as the rest of the firmware.
+- **`speed` field is repurposed for this preset only:** every other preset's `speed` byte
+  means "ms per animation step", which can't encode a useful multi-minute total duration in
+  one byte. For preset 6 only, `speed` means **minutes** (1–255; 0 defaults to 30). This is a
+  deliberate, documented exception — not a silent redefinition of the field ecosystem-wide.
+- Flash usage 6328 B (26% of 24 KB app region), RAM 1060 B. No other behavioural changes
+  from v1.8.0 (see v1.8.0 below for the OTA/bootloader-hosted architecture change).
+
+### v1.8.0 — OTA-capable, bootloader-hosted — released 2026-06-23
+- App relinked at `0x2000` (`app.ld`) to run under the noknok USB bootloader
+  (`module-USB-bootloader`), with the top 16 B of RAM reserved as the handoff cell.
+- `0xB0` ENTER_BOOTLOADER: writes the handoff magic + resets; the bootloader catches it and
+  stays in USB flashing mode. Updates now flash over USB via `usb_flash.ps1` / the Pico's
+  `UsbModuleFlasher` — no BOOT0 jumper needed after the bootloader's one-time flash.
+
+### v1.6 — unique serial + rich LED control & presets — released 2026-06-18
 - **Unique USB serial number.** `iSerialNumber` is now built at boot from the CH32V203's 96-bit hardware chip UID (ESIG at `0x1FFFF7E8`) as 24 hex characters, so every physical module enumerates with a **distinct serial**. This is the USB counterpart of the I2C hardware UID — it lets the Conductor tell identical modules apart and map them to roles. (Previously all modules shared the hardcoded serial `"007"`.)
 - **`0x10` SET_LED — full per-LED control in one command:** `0x10 i R G B brightness durLo durHi`. `i` = LED index (`0xFF` = all); `duration` is 16-bit ms (little-endian; `0` = hold indefinitely, otherwise the LED(s) auto-off after the duration). Non-blocking.
 - **`0x20` PLAY_PRESET — 5 built-in non-blocking animations** that run on the module (fire-and-forget, mirroring the buzzer's preset tunes): `1` rainbow rotate, `2` breathe, `3` theatre chase, `4` colour wipe, `5` twinkle. `0x20 preset speed R G B` — `speed` = ms per animation step (`0` = default 40 ms); `R G B` = base colour (ignored by rainbow). Any immediate command (`0x00`–`0x05`, `0x10`) cancels a running animation.
