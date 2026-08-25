@@ -55,6 +55,3 @@ auto-detect the module and expose the same commands.
 - `/hardware` — KiCad files, schematics, 3D models
 - `/firmware` — source (`src/`), built binaries (`bin/`), and the firmware change record (`readme.md`)
 - `/tools` — PC control scripts
-
-![USB LED Module](hardware/module-usb-led-front.png)
-![USB LED Module](hardware/module-usb-led-back.png)
