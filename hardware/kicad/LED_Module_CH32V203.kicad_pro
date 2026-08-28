@@ -40,8 +40,8 @@
         "other_text_upright": false,
         "pads": {
           "drill": 0.0,
-          "height": 0.25,
-          "width": 0.36
+          "height": 2.7,
+          "width": 2.7
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -104,7 +104,7 @@
         "skew_out_of_range": "error",
         "solder_mask_bridge": "error",
         "starved_thermal": "error",
-        "text_height": "ignore",
+        "text_height": "warning",
         "text_on_edge_cuts": "error",
         "text_thickness": "warning",
         "through_hole_pad_without_hole": "error",
@@ -140,7 +140,7 @@
         "min_track_width": 0.0,
         "min_via_annular_width": 0.1,
         "min_via_diameter": 0.5,
-        "solder_mask_to_copper_clearance": 0.005,
+        "solder_mask_to_copper_clearance": 0.0,
         "use_height_for_length_calcs": true
       },
       "teardrop_options": [
@@ -224,7 +224,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "V2.0"
+      "sch_revision": ""
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -666,16 +666,16 @@
       {
         "filename": "LED_Module_CH32V203.kicad_sch",
         "name": "LED_Module_CH32V203",
-        "uuid": "7aa74983-bfb7-4efe-97cb-ea36664f29b0"
+        "uuid": "00000000-0000-0000-0000-000000000000"
       }
     ],
-    "used_designators": "D6,U4",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
     [
       "7aa74983-bfb7-4efe-97cb-ea36664f29b0",
-      "LED_Module_CH32V203"
+      "Root"
     ]
   ],
   "text_variables": {},
