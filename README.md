@@ -6,7 +6,7 @@ Pico drives it as a **USB host**; it can also be driven directly from a PC.
 ## Features
 - 8× WS2812b RGB LEDs (ring)
 - CH32V203G6U6 microcontroller, USB 1.1 (CDC) device
-- USB-C power + data; 2× Qwiic/Stemma-QT I2C pass-through connectors
+- USB-C power + data; 2× Qwiic / STEMMA QT compatible I2C pass-through connectors
 - **Unique per-unit USB serial** derived from the chip UID — so the Conductor can tell
   identical modules apart and map them to roles (the USB counterpart of the I2C UID)
 - Rich control: per-LED colour/brightness/timed-off in one command, plus 6 built-in
@@ -58,3 +58,14 @@ auto-detect the module and expose the same commands.
 
 ![USB LED Module](hardware/module-usb-led-front.png)
 ![USB LED Module](hardware/module-usb-led-back.png)
+
+---
+
+## Trademarks
+
+**noknok** is a registered trademark in Switzerland (Swissreg 1300007033).
+
+Qwiic is a registered trademark of SparkFun Electronics, Inc. STEMMA QT is a
+trademark of Adafruit Industries, LLC. Both are named here only to state
+connector compatibility - noknok is not affiliated with, endorsed by, or
+sponsored by either company.
