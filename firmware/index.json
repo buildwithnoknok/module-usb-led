@@ -2,6 +2,5 @@
   "module": "usb_leds",
   "version": "1.8.1",
   "url": "https://raw.githubusercontent.com/buildwithnoknok/module-usb-led/main/firmware/bin/noknok_leds.bin",
-  "requires_bootloader": "any",
   "released": "2026-07-02"
 }
