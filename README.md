@@ -13,7 +13,7 @@ Pico drives it as a **USB host**; it can also be driven directly from a PC.
   animations (rainbow, breathe, theatre chase, colour wipe, twinkle, sundown)
 
 ## Status
-- **Firmware: v1.8.1 — complete** (see [firmware/readme.md](firmware/readme.md) for the
+- **Firmware: v1.8.2 — complete** (see [firmware/readme.md](firmware/readme.md) for the
   full command protocol, flashing instructions, and version history)
 - Hardware: v1.0
 

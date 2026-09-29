@@ -42,7 +42,22 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 
 ## Firmware Change Record
 
-### v1.8.1 — sundown preset (current) — released 2026-07-02
+### v1.8.2 — lossless USB receive (current) — released 2026-09-29
+- **Bug fix: commands could be lost or misread when sent back-to-back.** ch32fun `usbd.c`'s
+  printf receive path (`FUNCONF_USE_USBPRINTF`) keeps a 64-byte buffer and throws away the
+  OLDEST bytes when another USB packet arrives before the main loop has read it. The parser
+  then desynced and leftover colour bytes ran as commands — a `0x00` byte means "all off",
+  so the ring could go dark or show wrong colours. Found on the LEDs 16x bench.
+- **Fix:** `FUNCONF_USE_USBPRINTF 0` (+ `FUNCONF_NULL_PRINTF 1`); the firmware implements the
+  CDC callbacks itself with a 256-byte ring filled in the USB interrupt. When less than one
+  packet (64 B) of room is left the USB interrupt is masked, so the endpoint answers NAK and
+  the host simply retries — true flow control, no byte can be dropped. The main loop drains
+  the ring, unmasks, then parses.
+- Test: `tools/stress_leds8.py` (hundreds of back-to-back `0x04` frames, then compare the ring
+  with the printed expected frame).
+- No protocol or behaviour change otherwise. Flash 6360 B (26 %), RAM 1256 B.
+
+### v1.8.1 — sundown preset — released 2026-07-02
 - **New preset 6 = SUNDOWN.** `0x20 6 minutes R G B` plays a **one-shot** fade from full
   brightness to off in the caller-supplied colour, over `minutes` minutes (not the usual
   `speed`-as-ms/step — see below). Unlike presets 1–5, which loop forever until the next
