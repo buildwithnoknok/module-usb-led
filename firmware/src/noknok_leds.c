@@ -1,5 +1,5 @@
 /*
- * noknok LEDs Module - Firmware v1.8.2 (USBD / FSDEV)
+ * noknok LEDs Module - Firmware v1.8.3 (USBD / FSDEV)
  * MCU:   CH32V203G6U6
  * CLOCK: boots on HSI, manual switch to HSE(24MHz) x2 = 48 MHz (crystal-accurate).
  * USB:   USBD (FSDEV) controller via extralibs/usbd.c - the SAME controller the
@@ -62,6 +62,11 @@
  *     the parser then desynced and stray 0x00 bytes executed as ALL OFF. Now our own
  *     256 B ring + USB NAK flow control (see 'USB receive path').
  *     FUNCONF_USE_USBPRINTF = 0. Same fix as the LEDs 16x firmware v2.0.1.
+ *
+ * v1.8.3 changes (19 Nov 2026, DEV-269):
+ *   - GLITCH-FREE LED FRAMES on fast re-sends: compare preload on, every frame starts
+ *     from a stopped bit timer with a leading low slot, IRQs off during the frame.
+ *     Same fix as the LEDs 16x firmware v2.2.2 (DEV-78). See ws_show().
  */
 
 #include "ch32fun.h"
@@ -74,7 +79,7 @@
 #define PROTOCOL_VERSION  0x01
 #define FW_VERSION_MAJOR  1
 #define FW_VERSION_MINOR  8
-#define FW_VERSION_PATCH  2
+#define FW_VERSION_PATCH  3
 
 /* ============================================================
  * Unique USB serial number (built from chip UID at boot)
@@ -138,12 +143,14 @@ static inline uint16_t now_ms(void) { return (uint16_t)TIM3->CNT; }
 #define WS_T1H         38
 #define WS_T0H         19
 #define WS_RESET_BITS  60
-#define WS_BUF_LEN     (LED_COUNT * 24 + WS_RESET_BITS)
+#define WS_LEAD_SLOTS  1    /* DEV-269: one low slot before the first data bit */
+#define WS_BUF_LEN     (WS_LEAD_SLOTS + LED_COUNT * 24 + WS_RESET_BITS)
 
 static uint16_t ws_dma_buf[WS_BUF_LEN] __attribute__((aligned(4)));
 
 static void ws_build_buf(uint8_t *grb) {
     uint16_t *p = ws_dma_buf;
+    *p++ = 0;                                          /* lead slot, see ws_show() */
     for (int i = 0; i < LED_COUNT * 3; i++) {
         uint8_t byte = grb[i];
         for (int bit = 7; bit >= 0; bit--)
@@ -160,7 +167,9 @@ static void ws_init(void) {
     TIM2->PSC     = 0;
     TIM2->ATRLR   = WS_PERIOD - 1;
     TIM2->CH4CVR  = 0;
-    TIM2->CHCTLR2 = (TIM2->CHCTLR2 & ~0xFF00) | (0x60 << 8);
+    /* CH4: PWM mode 1 (OC4M=110) + output-compare PRELOAD (OC4PE): a DMA-written pulse
+     * width only becomes active at the next update, so every bit is a whole pulse (DEV-269). */
+    TIM2->CHCTLR2 = (TIM2->CHCTLR2 & ~0xFF00) | ((0x60 | 0x08) << 8);
     TIM2->CCER   |= TIM_CC4E;
     TIM2->CTLR1  |= TIM_ARPE;
     TIM2->DMAINTENR |= TIM_UDE;
@@ -174,13 +183,24 @@ static void ws_init(void) {
 
 static void ws_show(uint8_t *grb) {
     ws_build_buf(grb);
+    /* DEV-269 (v1.8.3, same fix as LEDs 16x 2.2.2 / DEV-78): every frame starts from a
+     * STOPPED bit timer. Before, the DMA was armed while TIM2 kept running and without
+     * compare preload, so a stale update request or a late DMA write could double, drop
+     * or cut a bit slot and the frame arrived shifted (one LED off-colour / ring flash on
+     * fast re-sends). Now: stop the timer (line low, CCR = 0), arm the DMA, restart from
+     * CNT = 0; a stale request can only move the LEAD slot (0) into the preload early.
+     * Interrupts are off for the ~0.4 ms of the frame; the USB hardware NAKs meanwhile. */
+    TIM2->CTLR1 &= ~TIM_CEN;
     DMA1_Channel2->CFGR  &= ~DMA_CFGR1_EN;
     DMA1->INTFCR = DMA1_IT_TC2;
     DMA1_Channel2->CNTR  = WS_BUF_LEN;
     DMA1_Channel2->MADDR = (uint32_t)ws_dma_buf;
     DMA1_Channel2->CFGR |= DMA_CFGR1_EN;
-    TIM2->SWEVGR = TIM_UG;
+    TIM2->CNT = 0;
+    __disable_irq();
+    TIM2->CTLR1 |= TIM_CEN;                   /* first update in 1.25 us loads the lead slot */
     while (!(DMA1->INTFR & DMA1_IT_TC2));
+    __enable_irq();
     DMA1->INTFCR = DMA1_IT_TC2;
 }
 

@@ -42,7 +42,16 @@ A *constant* solid-white means the firmware is **not** running (old/failed flash
 
 ## Firmware Change Record
 
-### v1.8.2 — lossless USB receive (current) — released 2026-09-29
+### v1.8.3 — glitch-free LED frames (current) — released 2026-11-19 (DEV-269)
+- **Hardened the LED output** the same way as the LEDs 16x 2.2.2 (DEV-78): timer compare
+  preload on, every frame starts from a stopped bit timer with a leading low slot, and
+  interrupts are off for the ~0.4 ms of the frame. Before, the DMA was armed while the bit
+  timer ran, which on the 16x made ~4-5 % of quickly re-sent frames arrive shifted by one bit.
+  The 8x showed no visible glitches before or after (bench, 2834 frames each, watched), so this
+  removes a latent race rather than a seen fault. Parser checked at 192 commands/s from a Pi
+  (57,598 commands, every version check correct). New tool: `tools/leds8_stream.py`.
+
+### v1.8.2 — lossless USB receive — released 2026-09-29
 - **Bug fix: commands could be lost or misread when sent back-to-back.** ch32fun `usbd.c`'s
   printf receive path (`FUNCONF_USE_USBPRINTF`) keeps a 64-byte buffer and throws away the
   OLDEST bytes when another USB packet arrives before the main loop has read it. The parser
